@@ -1,20 +1,23 @@
-// Install dependencies with:
-// npm install express axios node-html-parser cors dotenv
+// Install dependencies first:
+// npm install express axios node-html-parser cors
 
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const { parse } = require("node-html-parser");
-require("dotenv").config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// GET API KEY from environment directly
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 /**
  * POST /scrape
  * Input: { url }
  * Output: { text }
+ * Description: Scrapes article content from a URL.
  */
 app.post("/scrape", async (req, res) => {
   const { url } = req.body;
@@ -22,7 +25,9 @@ app.post("/scrape", async (req, res) => {
 
   try {
     const { data } = await axios.get(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+      },
     });
 
     const root = parse(data);
@@ -40,6 +45,7 @@ app.post("/scrape", async (req, res) => {
  * POST /clean
  * Input: { text }
  * Output: { cleanedDescription }
+ * Description: Cleans/simplifies article text using OpenAI.
  */
 app.post("/clean", async (req, res) => {
   const { text } = req.body;
@@ -65,7 +71,7 @@ app.post("/clean", async (req, res) => {
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
           "Content-Type": "application/json",
         },
       }
