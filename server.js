@@ -1,11 +1,11 @@
-// Install dependencies first:
+// Install dependencies with:
 // npm install express axios node-html-parser cors dotenv
 
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const { parse } = require("node-html-parser");
-require("dotenv").config(); // Load variables from .env
+require("dotenv").config();
 
 const app = express();
 app.use(cors());
@@ -15,7 +15,6 @@ app.use(express.json());
  * POST /scrape
  * Input: { url }
  * Output: { text }
- * Description: Scrapes article content from a URL.
  */
 app.post("/scrape", async (req, res) => {
   const { url } = req.body;
@@ -23,14 +22,11 @@ app.post("/scrape", async (req, res) => {
 
   try {
     const { data } = await axios.get(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-      },
+      headers: { "User-Agent": "Mozilla/5.0" },
     });
 
     const root = parse(data);
     const paragraphs = root.querySelectorAll("div.Normal, ._s30J, p");
-
     const articleText = paragraphs.map(p => p.text.trim()).join("\n\n");
 
     res.json({ text: articleText || "No article text found." });
@@ -44,7 +40,6 @@ app.post("/scrape", async (req, res) => {
  * POST /clean
  * Input: { text }
  * Output: { cleanedDescription }
- * Description: Cleans/simplifies article text using OpenAI.
  */
 app.post("/clean", async (req, res) => {
   const { text } = req.body;
@@ -54,14 +49,19 @@ app.post("/clean", async (req, res) => {
     const response = await axios.post(
       "https://api.chatanywhere.tech/v1/chat/completions",
       {
-        model: "gpt-3.5-turbo",
+        model: "gpt-3.5-turbo-0125",
         messages: [
           {
+            role: "system",
+            content: "Clean the article text to be readable, keep meaning.",
+          },
+          {
             role: "user",
-            content: `Clean and simplify the following article content. Make it more readable for general users:\n\n${text}`,
+            content: text,
           },
         ],
-        temperature: 0.7,
+        temperature: 0.5,
+        max_tokens: 600,
       },
       {
         headers: {
@@ -83,4 +83,3 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
