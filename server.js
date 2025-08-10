@@ -1,10 +1,9 @@
 // Install dependencies:
-// npm install express axios node-html-parser cors dotenv firebase-admin
+// npm install express axios cors dotenv firebase-admin
 
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const { parse } = require("node-html-parser");
 const admin = require("firebase-admin");
 require("dotenv").config();
 
@@ -36,25 +35,6 @@ app.use(express.json());
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 // =============================
-// Scraper Function
-// =============================
-async function scrapeArticle(url) {
-  try {
-    const { data } = await axios.get(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-    });
-
-    const root = parse(data);
-    const paragraphs = root.querySelectorAll("div.Normal, ._s30J, p");
-    const articleText = paragraphs.map((p) => p.text.trim()).join("\n\n");
-    return articleText || null;
-  } catch (err) {
-    console.error("Scrape error:", err.message);
-    return null;
-  }
-}
-
-// =============================
 // Retry Helper for OpenAI Calls
 // =============================
 async function retryOpenAIRequest(requestFn, retries = 3, delay = 1000) {
@@ -76,13 +56,13 @@ async function retryOpenAIRequest(requestFn, retries = 3, delay = 1000) {
 // =============================
 // Title/Description Cleaning
 // =============================
-async function cleanTitleAndDescription(title, description, scrapedText) {
+async function cleanTitleAndDescription(title, description) {
   const prompt = `
 Rephrase the following news article title and description so they are unique but keep the meaning.
-If the title is missing, create one from the description or article content.
+If the title is missing, create one from the description.
 
 Title: ${title || "N/A"}
-Description: ${description || scrapedText || "N/A"}
+Description: ${description || "N/A"}
 
 Return JSON with exactly two keys: "title" and "description".
   `;
@@ -118,7 +98,7 @@ Return JSON with exactly two keys: "title" and "description".
       console.warn("⚠️ OpenAI returned non-JSON. Using fallback.");
       parsed = {
         title: title || "Untitled News",
-        description: scrapedText || description || "",
+        description: description || "",
       };
     }
     return parsed;
@@ -126,7 +106,7 @@ Return JSON with exactly two keys: "title" and "description".
     console.error("OpenAI error:", err.message);
     return {
       title: title || "Untitled News",
-      description: scrapedText || description || "",
+      description: description || "",
     };
   }
 }
@@ -139,22 +119,18 @@ app.post("/process-article", async (req, res) => {
   if (!url) return res.status(400).json({ error: "Missing article URL" });
 
   try {
-    // 1. Scrape the article
-    const scrapedText = await scrapeArticle(url);
+    // 1. Clean or generate title & description
+    const cleaned = await cleanTitleAndDescription(title, description);
 
-    // 2. Clean or generate title & description
-    const cleaned = await cleanTitleAndDescription(title, description, scrapedText);
-
-    // 3. Save only AI-rephrased description (not RSS description)
+    // 2. Save both AI-rephrased title & description
     const docId = Buffer.from(url).toString("base64");
     const articleDoc = {
       url,
-      title: cleaned.title,
-      description: cleaned.description, // always from OpenAI
+      title: cleaned.title, // AI-written title
+      description: cleaned.description, // AI-written description
       imageUrl: imageUrl || null,
       publishedAt: publishedAt || new Date().toISOString(),
       source: source || "Unknown",
-      scrapedText: scrapedText || "",
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
     await db.collection("articles").doc(docId).set(articleDoc);
