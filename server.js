@@ -11,8 +11,6 @@ require("dotenv").config();
 // =============================
 // Firebase Admin Initialization
 // =============================
-
-// Get service account from environment variable (stringified JSON)
 if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
   console.error("❌ Missing FIREBASE_SERVICE_ACCOUNT_KEY env variable");
   process.exit(1);
@@ -57,20 +55,39 @@ async function scrapeArticle(url) {
 }
 
 // =============================
+// Retry Helper for OpenAI Calls
+// =============================
+async function retryOpenAIRequest(requestFn, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await requestFn();
+    } catch (err) {
+      if (err.response?.status === 429 && i < retries - 1) {
+        console.warn(`⚠️ Rate limited. Retrying in ${delay}ms...`);
+        await new Promise((res) => setTimeout(res, delay));
+        delay *= 2; // exponential backoff
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+// =============================
 // Title/Description Cleaning
 // =============================
 async function cleanTitleAndDescription(title, description, scrapedText) {
-  try {
-    const prompt = `
-Rephrase the news so it is unique but keeps meaning.
-If title is missing, generate one from the description or scraped text.
+  const prompt = `
+Rephrase the following news article title and description so they are unique but keep the meaning.
+If the title is missing, create one from the description or article content.
 
 Title: ${title || "N/A"}
 Description: ${description || scrapedText || "N/A"}
 
-Return JSON with "title" and "description".
-    `;
+Return JSON with exactly two keys: "title" and "description".
+  `;
 
+  const requestFn = async () => {
     const response = await axios.post(
       "https://api.chatanywhere.tech/v1/chat/completions",
       {
@@ -89,24 +106,27 @@ Return JSON with "title" and "description".
         },
       }
     );
+    return response.data.choices[0].message.content;
+  };
 
-    let cleaned = response.data.choices[0].message.content;
+  try {
+    const cleaned = await retryOpenAIRequest(requestFn, 3, 1500);
     let parsed;
     try {
       parsed = JSON.parse(cleaned);
     } catch {
+      console.warn("⚠️ OpenAI returned non-JSON. Using fallback.");
       parsed = {
         title: title || "Untitled News",
-        description: description || scrapedText || "",
+        description: scrapedText || description || "",
       };
     }
-
     return parsed;
   } catch (err) {
     console.error("OpenAI error:", err.message);
     return {
       title: title || "Untitled News",
-      description: description || scrapedText || "",
+      description: scrapedText || description || "",
     };
   }
 }
@@ -119,18 +139,18 @@ app.post("/process-article", async (req, res) => {
   if (!url) return res.status(400).json({ error: "Missing article URL" });
 
   try {
-    // Scrape text
+    // 1. Scrape the article
     const scrapedText = await scrapeArticle(url);
 
-    // Clean or generate title & description
+    // 2. Clean or generate title & description
     const cleaned = await cleanTitleAndDescription(title, description, scrapedText);
 
-    // Save to Firestore
+    // 3. Save only AI-rephrased description (not RSS description)
     const docId = Buffer.from(url).toString("base64");
     const articleDoc = {
       url,
       title: cleaned.title,
-      description: cleaned.description,
+      description: cleaned.description, // always from OpenAI
       imageUrl: imageUrl || null,
       publishedAt: publishedAt || new Date().toISOString(),
       source: source || "Unknown",
