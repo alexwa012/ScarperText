@@ -5,6 +5,7 @@
   "dotenv": "^16.6.1",
   "express": "^5.1.0",
   "firebase-admin": "^13.4.0",
-  "cheerio": "^1.0.0" 
+  "cheerio": "^1.0.0",
+  "node-html-parser": "^7.0.1"
 }
 }
