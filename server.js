@@ -1,24 +1,15 @@
 // Install dependencies with:
-// npm install express axios node-html-parser cors dotenv firebase-admin
+// npm install express axios node-html-parser cors dotenv
 
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const { parse } = require("node-html-parser");
 require("dotenv").config();
-const admin = require("firebase-admin");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// ✅ Firestore Initialization (if you want storage)
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.applicationDefault(),
-  });
-}
-const db = admin.firestore();
 
 /**
  * POST /scrape
@@ -36,7 +27,7 @@ app.post("/scrape", async (req, res) => {
 
     const root = parse(data);
     const paragraphs = root.querySelectorAll("div.Normal, ._s30J, p");
-    const articleText = paragraphs.map((p) => p.text.trim()).join("\n\n");
+    const articleText = paragraphs.map(p => p.text.trim()).join("\n\n");
 
     res.json({ text: articleText || "No article text found." });
   } catch (err) {
@@ -47,26 +38,26 @@ app.post("/scrape", async (req, res) => {
 
 /**
  * POST /clean
- * Input: { title, text }
- * Output: { cleanedTitle, cleanedDescription }
+ * Input: { text }
+ * Output: { title, description }
  */
 app.post("/clean", async (req, res) => {
-  const { title, text } = req.body;
-  if (!title && !text) {
-    return res.status(400).json({ error: "Missing title and text input" });
-  }
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: "Missing text input" });
+
+  const prompt = `
+From the following article text, generate a short, catchy title and a cleaned, readable description.
+Return ONLY valid JSON in this format:
+{
+  "title": "Generated title here",
+  "description": "Cleaned description here"
+}
+
+Article text:
+${text}
+`;
 
   try {
-    const prompt = `
-Rephrase the following news article title and description so they are unique but keep the meaning.
-If the title is missing, create one from the description.
-
-Title: ${title || "N/A"}
-Description: ${text || "N/A"}
-
-Return JSON with exactly two keys: "title" and "description".
-    `;
-
     const response = await axios.post(
       "https://api.chatanywhere.tech/v1/chat/completions",
       {
@@ -76,7 +67,7 @@ Return JSON with exactly two keys: "title" and "description".
           { role: "user", content: prompt },
         ],
         temperature: 0.5,
-        max_tokens: 600,
+        max_tokens: 800,
       },
       {
         headers: {
@@ -86,31 +77,26 @@ Return JSON with exactly two keys: "title" and "description".
       }
     );
 
-    let cleaned;
+    let aiOutput = response.data.choices[0].message.content.trim();
+    let parsed;
+
     try {
-      cleaned = JSON.parse(response.data.choices[0].message.content);
-    } catch (err) {
-      console.warn("⚠️ OpenAI returned non-JSON, using fallback.");
-      cleaned = { title: title || "Untitled", description: text || "" };
+      parsed = JSON.parse(aiOutput);
+    } catch (e) {
+      console.error("⚠️ OpenAI returned non-JSON:", aiOutput);
+      return res.status(500).json({
+        error: "Invalid JSON from AI",
+        rawOutput: aiOutput,
+      });
     }
 
-    // ✅ Store to Firestore
-    const docId = Buffer.from(cleaned.title).toString("base64");
-    await db.collection("articles").doc(docId).set({
-      title: cleaned.title,
-      description: cleaned.description,
-      createdAt: new Date().toISOString(),
-    });
-
     res.json({
-      cleanedTitle: cleaned.title,
-      cleanedDescription: cleaned.description,
+      title: parsed.title || "Untitled",
+      description: parsed.description || "",
     });
   } catch (err) {
     console.error("OpenAI error:", err.message);
-    res
-      .status(500)
-      .json({ error: "OpenAI request failed", details: err.message });
+    res.status(500).json({ error: "OpenAI request failed", details: err.message });
   }
 });
 
