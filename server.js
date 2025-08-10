@@ -1,11 +1,11 @@
 // Install dependencies:
-// npm install express axios cors dotenv firebase-admin cheerio
+// npm install express axios cors dotenv firebase-admin node-html-parser
 
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const admin = require("firebase-admin");
-const cheerio = require("cheerio");
+const { parse } = require("node-html-parser");
 require("dotenv").config();
 
 // =============================
@@ -26,24 +26,58 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// =============================
+// Express App Setup
+// =============================
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+// =============================
+// Helper: Scrape Article Content
+// =============================
+async function scrapeDescriptionFromUrl(url) {
+  try {
+    console.log(`🌐 Scraping description from: ${url}`);
+    const { data } = await axios.get(url, { timeout: 10000 });
+    const root = parse(data);
+
+    // Try meta description first
+    let description =
+      root.querySelector("meta[name='description']")?.getAttribute("content") ||
+      root.querySelector("meta[property='og:description']")?.getAttribute("content") ||
+      "";
+
+    // Fallback: grab first paragraph
+    if (!description) {
+      const firstParagraph = root.querySelector("p");
+      if (firstParagraph) description = firstParagraph.text.trim();
+    }
+
+    return description || "";
+  } catch (err) {
+    console.error(`❌ Failed to scrape ${url}:`, err.message);
+    return "";
+  }
+}
+
 // =============================
 // Retry Helper for OpenAI Calls
 // =============================
-async function retryOpenAIRequest(requestFn, retries = 3, delay = 1000) {
+async function retryOpenAIRequest(requestFn, retries = 3, delay = 1000, batchIndex = 0) {
   for (let i = 0; i < retries; i++) {
     try {
+      console.log(`🔹 [Batch ${batchIndex}] OpenAI attempt ${i + 1}/${retries}...`);
       return await requestFn();
     } catch (err) {
       if (err.response?.status === 429 && i < retries - 1) {
-        console.warn(`⚠️ Rate limited. Retrying in ${delay}ms...`);
+        console.warn(`⚠️ [Batch ${batchIndex}] Rate limited. Retrying in ${delay}ms...`);
         await new Promise((res) => setTimeout(res, delay));
-        delay *= 2;
+        delay *= 2; // exponential backoff
       } else {
+        console.error(`❌ [Batch ${batchIndex}] OpenAI request failed:`, err.message);
         throw err;
       }
     }
@@ -51,35 +85,9 @@ async function retryOpenAIRequest(requestFn, retries = 3, delay = 1000) {
 }
 
 // =============================
-// Scrape Article Description
+// OpenAI Batch Cleaner
 // =============================
-async function scrapeDescriptionFromUrl(url) {
-  try {
-    const { data } = await axios.get(url, { timeout: 10000 });
-    const $ = cheerio.load(data);
-
-    // Try common meta tags first
-    let description =
-      $('meta[name="description"]').attr("content") ||
-      $('meta[property="og:description"]').attr("content") ||
-      $('meta[name="twitter:description"]').attr("content");
-
-    if (!description) {
-      // Fallback: grab first <p> block
-      description = $("p").first().text();
-    }
-
-    return description?.trim() || "";
-  } catch (err) {
-    console.warn(`⚠️ Failed to scrape description for ${url}:`, err.message);
-    return "";
-  }
-}
-
-// =============================
-// Clean Titles & Descriptions in Batch
-// =============================
-async function cleanArticlesInBatch(articles) {
+async function cleanArticlesInBatch(articles, batchIndex) {
   const prompt = `
 Rephrase the following news articles' titles and descriptions so they are unique but keep the meaning.
 If a title is missing, create one from the description.
@@ -113,77 +121,48 @@ ${JSON.stringify(articles, null, 2)}
     return response.data.choices[0].message.content;
   };
 
-  const cleaned = await retryOpenAIRequest(requestFn, 3, 1500);
+  const cleaned = await retryOpenAIRequest(requestFn, 3, 1500, batchIndex);
   try {
     return JSON.parse(cleaned);
   } catch {
-    console.warn("⚠️ OpenAI returned non-JSON. Using fallback.");
+    console.warn(`⚠️ [Batch ${batchIndex}] OpenAI returned non-JSON. Using fallback.`);
     return articles;
   }
 }
 
 // =============================
-// Helper: Deduplicate URLs
-// =============================
-function deduplicateUrls(urls) {
-  return [...new Set(urls)];
-}
-
-// Helper: Filter URLs already in Firestore
-async function filterUnprocessedUrls(urls) {
-  const result = [];
-  for (const url of urls) {
-    const docId = Buffer.from(url).toString("base64");
-    const doc = await db.collection("articles").doc(docId).get();
-    if (!doc.exists) result.push(url);
-  }
-  return result;
-}
-
-// Helper: Split into batches
-function createBatches(array, batchSize) {
-  const batches = [];
-  for (let i = 0; i < array.length; i += batchSize) {
-    batches.push(array.slice(i, i + batchSize));
-  }
-  return batches;
-}
-
-// =============================
-// API Endpoint for Batch Processing
+// API Endpoint (Batch Processing)
 // =============================
 app.post("/process-articles", async (req, res) => {
-  const urls = req.body.urls;
+  const { urls, batchSize = 5 } = req.body;
   if (!Array.isArray(urls) || urls.length === 0) {
-    return res.status(400).json({ error: "Missing URLs array" });
+    return res.status(400).json({ error: "Missing or invalid 'urls' array" });
   }
 
+  console.log(`📦 Received ${urls.length} URLs to process in batches of ${batchSize}`);
+
   try {
-    // 1. Deduplicate and filter already processed
-    const deduped = deduplicateUrls(urls);
-    const unprocessed = await filterUnprocessedUrls(deduped);
-    if (unprocessed.length === 0) {
-      return res.json({ success: true, message: "No new articles to process" });
+    // Split into batches
+    const batches = [];
+    for (let i = 0; i < urls.length; i += batchSize) {
+      batches.push(urls.slice(i, i + batchSize));
     }
 
-    // 2. Split into batches (safe size for GPT-3.5)
-    const batches = createBatches(unprocessed, 10); // adjust batch size if needed
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
+      console.log(`🚀 Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} URLs)`);
 
-    const allProcessed = [];
-
-    // 3. Process each batch
-    for (const batch of batches) {
-      // 3a. Scrape descriptions for each URL
+      // 1. Scrape descriptions for each URL
       const articlesWithContent = [];
       for (const url of batch) {
         const description = await scrapeDescriptionFromUrl(url);
         articlesWithContent.push({ title: "", description, url });
       }
 
-      // 3b. Rephrase in one OpenAI call
-      const cleanedArticles = await cleanArticlesInBatch(articlesWithContent);
+      // 2. Rephrase in bulk using OpenAI
+      const cleanedArticles = await cleanArticlesInBatch(articlesWithContent, batchIndex);
 
-      // 3c. Save each cleaned article to Firestore
+      // 3. Save results in Firestore
       for (let i = 0; i < cleanedArticles.length; i++) {
         const originalUrl = batch[i];
         const cleaned = cleanedArticles[i];
@@ -193,18 +172,25 @@ app.post("/process-articles", async (req, res) => {
           url: originalUrl,
           title: cleaned.title || "Untitled News",
           description: cleaned.description || "",
-          imageUrl: null, // you can scrape this if needed
+          imageUrl: null,
           publishedAt: new Date().toISOString(),
           source: "Unknown",
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         };
 
         await db.collection("articles").doc(docId).set(articleDoc);
-        allProcessed.push(articleDoc);
+      }
+
+      console.log(`✅ Finished batch ${batchIndex + 1}`);
+
+      // 4. Wait before next batch to avoid hitting rate limit
+      if (batchIndex < batches.length - 1) {
+        console.log(`⏳ Waiting 3 seconds before next batch...`);
+        await new Promise((res) => setTimeout(res, 3000));
       }
     }
 
-    res.json({ success: true, processed: allProcessed.length, data: allProcessed });
+    res.json({ success: true, message: "All articles processed successfully" });
   } catch (err) {
     console.error("Processing failed:", err.message);
     res.status(500).json({ error: "Processing failed", details: err.message });
