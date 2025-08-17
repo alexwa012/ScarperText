@@ -45,17 +45,25 @@ app.post("/clean", async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ error: "Missing text input" });
 
-  const prompt = `
+ const prompt = `
 From the following article text, generate a short, catchy title and a cleaned, readable description.
+
+Requirements:
+- Title: maximum 12 words, catchy but concise.
+- Description: must be between 150–250 words, well-structured, coherent, and reader-friendly.
+- Avoid repetition, filler words, or adding unrelated content.
+- Do NOT include disclaimers or formatting outside JSON.
+
 Return ONLY valid JSON in this format:
 {
   "title": "Generated title here",
-  "description": "Cleaned description here"
+  "description": "Cleaned description here (150–250 words)"
 }
 
 Article text:
 ${text}
 `;
+
 
   try {
     const response = await axios.post(
@@ -67,7 +75,7 @@ ${text}
           { role: "user", content: prompt },
         ],
         temperature: 0.5,
-        max_tokens: 800,
+        max_tokens: 1200,
       },
       {
         headers: {
@@ -104,3 +112,4 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
