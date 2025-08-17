@@ -133,7 +133,7 @@ async function processArticle(article, category) {
     // ✅ Check if already in DB (avoid duplicates)
     const exists = await db.collection("articles").where("url", "==", url).get();
     if (!exists.empty) {
-      console.log(`Skipping (already exists): ${url}`);
+      console.log(`⏭ Skipping (already exists): ${url}`);
       return;
     }
 
@@ -168,8 +168,8 @@ async function processArticle(article, category) {
   }
 }
 
-// ---------- CRON JOB: RUN EVERY HOUR ----------
-cron.schedule("0 * * * *", async () => {
+// ---------- TRIGGER FUNCTION ----------
+async function runJob() {
   console.log("⏳ Fetching RSS feeds...");
 
   for (const [category, feedUrl] of Object.entries(RSS_FEEDS)) {
@@ -178,7 +178,7 @@ cron.schedule("0 * * * *", async () => {
       const result = await parseStringPromise(data);
       const items = result.rss.channel[0].item || [];
 
-      for (const article of items.slice(0, 5)) { // limit to avoid rate-limit
+      for (const article of items.slice(0, 5)) { // limit to 5 per feed
         await processArticle(article, category);
 
         // small delay (avoid rate limits)
@@ -190,6 +190,20 @@ cron.schedule("0 * * * *", async () => {
   }
 
   console.log("✅ Feed fetch complete");
+}
+
+// ---------- CRON JOB: RUN EVERY HOUR ----------
+cron.schedule("0 * * * *", runJob);
+
+// ---------- MANUAL TRIGGER ENDPOINT ----------
+app.get("/run-job-now", async (req, res) => {
+  try {
+    await runJob();
+    res.json({ success: true, message: "Job executed successfully" });
+  } catch (err) {
+    console.error("Manual job error:", err.message);
+    res.status(500).json({ error: "Job execution failed", details: err.message });
+  }
 });
 
 // ---------- START SERVER ----------
