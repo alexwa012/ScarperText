@@ -45,16 +45,17 @@ app.post("/clean", async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ error: "Missing text input" });
 
- const prompt = `
+const prompt = `
 From the following article text, generate a short, catchy title and a cleaned, readable description.
 
 Requirements:
 - Title: maximum 12 words, catchy but concise.
 - Description: must be between 150–250 words, well-structured, coherent, and reader-friendly.
 - Avoid repetition, filler words, or adding unrelated content.
-- Do NOT include disclaimers or formatting outside JSON.
+- Do NOT include any Markdown formatting, code blocks, or backticks.
+- Return ONLY valid raw JSON (no extra text, no explanation).
 
-Return ONLY valid JSON in this format:
+Format:
 {
   "title": "Generated title here",
   "description": "Cleaned description here (150–250 words)"
@@ -63,6 +64,7 @@ Return ONLY valid JSON in this format:
 Article text:
 ${text}
 `;
+
 
 
   try {
@@ -112,4 +114,5 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
 
