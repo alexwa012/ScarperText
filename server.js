@@ -213,16 +213,33 @@ async function runJob() {
 // ---------- MANUAL TRIGGER ENDPOINT ----------
 app.get("/run-job-now", async (req, res) => {
   try {
-    await runJob();
-    res.json({ success: true, message: "Job executed successfully" });
+    // respond immediately
+    res.json({ success: true, message: "Job started" });
+
+    // run job asynchronously (not blocking response)
+    runJob().catch(err => {
+      console.error("Background job error:", err.message);
+    });
   } catch (err) {
-    console.error("Manual job error:", err.message);
-    res.status(500).json({ error: "Job execution failed", details: err.message });
+    console.error("Manual job trigger error:", err.message);
+    res.status(500).json({ error: "Failed to start job", details: err.message });
   }
 });
+
+
+// app.get("/run-job-now", async (req, res) => {
+//   try {
+//     await runJob();
+//     res.json({ success: true, message: "Job executed successfully" });
+//   } catch (err) {
+//     console.error("Manual job error:", err.message);
+//     res.status(500).json({ error: "Job execution failed", details: err.message });
+//   }
+// });
 
 // ---------- START SERVER ----------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
