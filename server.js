@@ -1,13 +1,13 @@
-// Install deps:
-// npm install express axios node-html-parser cors dotenv firebase-admin xml2js node-cron
+// Install deps first:
+// npm install express axios node-html-parser cors dotenv firebase-admin xml2js crypto
 
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const { parse } = require("node-html-parser");
 const { parseStringPromise } = require("xml2js");
-const cron = require("node-cron");
 const admin = require("firebase-admin");
+const crypto = require("crypto");
 require("dotenv").config();
 
 // ---------- FIREBASE INIT ----------
@@ -122,45 +122,63 @@ const RSS_FEEDS = {
   "Top Picks": "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
 };
 
-// ---------- HELPER: PROCESS ARTICLE ----------
+// ---------- HELPERS ----------
+function getDocIdFromUrl(url) {
+  return crypto.createHash("sha256").update(url).digest("hex");
+}
+
+// ---------- PROCESS ARTICLE ----------
 async function processArticle(article, category) {
   try {
-    const url = article.link[0];
+    const urlRaw = article.link?.[0];
+    if (!urlRaw) return;
+
+    const url = urlRaw.trim();
     const titleRaw = article.title?.[0];
     const imageUrl = article.enclosure?.[0]?.$.url || null;
     const createdAt = article.pubDate?.[0] || new Date().toISOString();
 
-    // ✅ Check if already in DB (avoid duplicates)
-    const exists = await db.collection("articles").where("url", "==", url).get();
-    if (!exists.empty) {
-      console.log(`⏭ Skipping (already exists): ${url}`);
-      return;
+    const docId = getDocIdFromUrl(url);
+    const docRef = db.collection("articles").doc(docId);
+
+    // ✅ Step 1: Check Firestore first
+    const docSnap = await docRef.get();
+    if (docSnap.exists) {
+      const data = docSnap.data();
+      if (data.description && data.description.length > 0) {
+        console.log(`⏭ Already exists, skipping API: ${url}`);
+        return; // already processed fully
+      } else {
+        console.log(`✏️ Exists but missing description → will update: ${url}`);
+      }
     }
 
-    // 1️⃣ Scrape
+    // ✅ Step 2: Scrape
     const scrapeRes = await axios.post(`http://localhost:${PORT}/scrape`, { url });
     const articleText = scrapeRes.data.text;
-
     if (!articleText || articleText === "No article text found.") {
       console.log(`⚠️ No text found for: ${url}`);
       return;
     }
 
-    // 2️⃣ Clean
+    // ✅ Step 3: Clean with OpenAI
     const cleanRes = await axios.post(`http://localhost:${PORT}/clean`, { text: articleText });
     const { title, description } = cleanRes.data;
 
-    // 3️⃣ Save to Firestore
-    await db.collection("articles").add({
-      url,
-      title: title || titleRaw,
-      description,
-      imageUrl,
-      createdAt,
-      source: "Times of India",
-      category,
-      insertedAt: new Date().toISOString(),
-    });
+    // ✅ Step 4: Save or Update
+    await docRef.set(
+      {
+        url,
+        title: title || titleRaw,
+        description,
+        imageUrl,
+        createdAt,
+        source: "Times of India",
+        category,
+        insertedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
 
     console.log(`✅ Saved: ${title}`);
   } catch (err) {
@@ -191,9 +209,6 @@ async function runJob() {
 
   console.log("✅ Feed fetch complete");
 }
-
-// ---------- CRON JOB: RUN EVERY HOUR ----------
-cron.schedule("0 * * * *", runJob);
 
 // ---------- MANUAL TRIGGER ENDPOINT ----------
 app.get("/run-job-now", async (req, res) => {
