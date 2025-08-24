@@ -241,10 +241,10 @@ app.get("/run-job-now", async (req, res) => {
 // });
 
 // ---------- AUTO CRON JOB (runs every 60 min) ----------
-cron.schedule("0 * * * *", () => {
-  console.log("⏰ Running scheduled RSS job...");
-  runJob().catch(err => console.error("Cron job error:", err.message));
-});
+// cron.schedule("0 * * * *", () => {
+//   console.log("⏰ Running scheduled RSS job...");
+//   runJob().catch(err => console.error("Cron job error:", err.message));
+// });
 
 
 // ---------- START SERVER ----------
@@ -252,6 +252,7 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
 
 
 
