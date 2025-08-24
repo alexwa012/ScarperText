@@ -8,6 +8,8 @@ const cors = require("cors");
 const { parse } = require("node-html-parser");
 const { parseStringPromise } = require("xml2js");
 const admin = require("firebase-admin");
+const cron = require("node-cron");   
+
 const crypto = require("crypto");
 require("dotenv").config();
 
@@ -238,10 +240,18 @@ app.get("/run-job-now", async (req, res) => {
 //   }
 // });
 
+// ---------- AUTO CRON JOB (runs every 60 min) ----------
+cron.schedule("0 * * * *", () => {
+  console.log("⏰ Running scheduled RSS job...");
+  runJob().catch(err => console.error("Cron job error:", err.message));
+});
+
+
 // ---------- START SERVER ----------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
 
 
