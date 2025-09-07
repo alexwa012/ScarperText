@@ -189,6 +189,33 @@ async function processArticle(article, category) {
   }
 }
 
+// ---------- CLEANUP OLD ARTICLES ----------
+async function cleanupOldArticles() {
+  try {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 5); // keep last 5 days
+    const cutoffIso = cutoffDate.toISOString();
+
+    const snapshot = await db.collection("articles")
+      .where("insertedAt", "<", cutoffIso)
+      .get();
+
+    if (snapshot.empty) {
+      console.log("🧹 No old articles to delete");
+      return;
+    }
+
+    const batch = db.batch();
+    snapshot.forEach(doc => batch.delete(doc.ref));
+    await batch.commit();
+
+    console.log(`🧹 Deleted ${snapshot.size} old articles (before ${cutoffIso})`);
+  } catch (err) {
+    console.error("cleanupOldArticles error:", err.message);
+  }
+}
+
+
 // ---------- TRIGGER FUNCTION ----------
 async function runJob() {
   console.log("⏳ Fetching RSS feeds...");
@@ -229,6 +256,16 @@ app.get("/run-job-now", async (req, res) => {
   }
 });
 
+// ---------- CLEANUP ENDPOINT ----------
+app.get("/cleanup", async (req, res) => {
+  try {
+    await cleanupOldArticles();
+    res.json({ success: true, message: "Cleanup complete" });
+  } catch (err) {
+    console.error("Cleanup endpoint error:", err.message);
+    res.status(500).json({ error: "Cleanup failed", details: err.message });
+  }
+});
 
 // app.get("/run-job-now", async (req, res) => {
 //   try {
@@ -252,6 +289,7 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
 
 
 
